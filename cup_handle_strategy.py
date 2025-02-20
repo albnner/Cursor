@@ -18,7 +18,7 @@ def init(context):
     context.start_date = '20200101'  # 回测开始日期
     context.end_date = '20231231'    # 回测结束日期
     
-    # 形态参数
+    # 杯柄勺形态参数
     context.cup_retrace_min = 0.25  # 杯部最小回撤
     context.handle_retrace_max = 0.03  # 柄部最大回撤
     context.volume_ratio = 0.65     # 柄部成交量比例
@@ -32,6 +32,7 @@ def init(context):
     context.cup_slope_min = 0.2   # 杯右最小斜率
     context.handle_slope_max = 0.4  # 柄部最大斜率绝对值
 
+    # 止盈止损参数
     context.stop_loss = 0.08  # 固定止损比例8%
     context.take_profit = 0.20  # 固定止盈比例20%
     context.trailing_stop = 0.10  # 回落止盈回撤比例10%
