@@ -32,10 +32,19 @@ def init(context):
     context.cup_slope_min = 0.2   # 杯右最小斜率
     context.handle_slope_max = 0.4  # 柄部最大斜率绝对值
 
+    context.stop_loss = 0.08  # 固定止损比例8%
+    context.take_profit = 0.20  # 固定止盈比例20%
+    context.trailing_stop = 0.10  # 回落止盈回撤比例10%
+    context.trailing_mode = True  # 是否启用回落止盈
+
 def handlebar(context):
     now_time = timetag_to_datetime(context.get_bar_timetag(context.barpos),"%Y%m%d")
     len=context.max_cup_days + context.max_handle_days,
     start_time = (datetime.strptime(now_time,"%Y%m%d")-timedelta(days = len)).strftime("%Y%m%d")
+
+    # 在原有逻辑前添加止损检查
+    check_stop_conditions(context)
+
     try:
         for security in context.stock_pool:
             # if not check_trading_status(security):
@@ -58,12 +67,13 @@ def handlebar(context):
             
             if signal:
 
-                log.info(f"发现买点 {security} 周期:{signal['days']} 价格:{price_df['close'].iloc[0]}")
+                # log.info(f"发现买点 {security} 周期:{signal['days']} 价格:{price_df['close'].iloc[0]}")
+                print(f"发现买点 {security} 周期:{signal['days']} 价格:{price_df['close'].iloc[0]}")
                 place_order(context, security)
                 
     except Exception as e:
-        log.error(f"主循环异常: {str(e)}")
-        # send_message(f"策略异常: {str(e)}")
+        # log.error(f"主循环异常: {str(e)}")
+        print(f"主循环异常: {str(e)}")
 
 def detect_cup_handle(context, price_df):
     """动态检测杯柄形态"""
@@ -83,7 +93,8 @@ def detect_cup_handle(context, price_df):
                     return {'days': f"{cup_days}/{handle_days}"}
         return None
     except Exception as e:
-        log.error(f"形态检测异常: {str(e)}")
+        # log.error(f"形态检测异常: {str(e)}")
+        print(f"形态检测异常: {str(e)}")
         return None
 
 def check_cup_condition(context, cup):
@@ -96,7 +107,8 @@ def check_cup_condition(context, cup):
             (calculate_retracement(cup) >= context.cup_retrace_min) # 回撤≥25%
         )
     except IndexError as e:
-        log.warning(f"杯部数据索引异常: {str(e)}")
+        # log.warning(f"杯部数据索引异常: {str(e)}")
+        print(f"杯部数据索引异常: {str(e)}")
         return False
 
 def check_handle_condition(context, cup, handle):
@@ -108,7 +120,8 @@ def check_handle_condition(context, cup, handle):
             (handle['volume'].mean() < cup['volume'].mean() * context.volume_ratio) # 柄部成交量均值低于杯部65%
         )
     except KeyError as e:
-        log.warning(f"字段不存在: {str(e)}")
+        # log.warning(f"字段不存在: {str(e)}")
+        print(f"字段不存在: {str(e)}")
         return False
 
 def check_volatility(context, cup, handle):
@@ -128,7 +141,8 @@ def check_volatility(context, cup, handle):
             (handle_atr.mean() < cup_atr.mean() * 0.6)
         )
     except Exception as e:
-        log.error(f"波动率计算异常: {str(e)}")
+        # log.error(f"波动率计算异常: {str(e)}")
+        print(f"波动率计算异常: {str(e)}")
         return False
 
 def check_trend(context, cup, handle):
@@ -141,25 +155,32 @@ def check_trend(context, cup, handle):
         # 杯右的斜率为正（上升趋势），柄部的斜率绝对值小于0.5（波动平缓）
         return (cup_slope > context.cup_slope_min) and (abs(handle_slope) < context.handle_slope_max)
     except np.linalg.LinAlgError:
-        log.warning("趋势计算矩阵异常")
+        # log.warning("趋势计算矩阵异常")
+        print("趋势计算矩阵异常")
         return False
 
 def place_order(context, security):
     """下单操作"""
     try:
-        if context.portfolio.positions[security].quantity == 0:
-            order_target_percent(
-                security, 
-                1, 
-                'MARKET',
-                context,
-                context.account_id
-            )
-            log.info(f"下单成功 {security}")
+        # if context.portfolio.positions[security].quantity == 0:
+        context.entry_price = bar.close
+        context.highest_price = bar.close  # 初始化最高价
+
+        order_target_percent(
+            security, 
+            1, 
+            'MARKET',
+            context,
+            context.account_id
+        )
+        # log.info(f"下单成功 {security}")
+        print(f"下单成功 {security}")
     except TradingError as te:
-        log.error(f"交易失败 {security}: {te.order_id}")
+        # log.error(f"交易失败 {security}: {te.order_id}")
+        print(f"交易失败 {security}: {te.order_id}")
     except Exception as e:
-        log.error(f"下单异常 {security}: {str(e)}")
+        # log.error(f"下单异常 {security}: {str(e)}")
+        print(f"下单异常 {security}: {str(e)}")
 
 # ------------ 工具函数 ------------
 def calculate_retracement(data):
@@ -180,3 +201,61 @@ def check_trading_status(security):
     instr = get_instrument(security)
     return not (instr.is_st or instr.status == '停牌')
 '''
+
+def check_stop_conditions(context):
+    """止盈止损检查"""
+    # 获取所有持仓
+    try:
+        holdings = get_trade_detail_data(context.accountid,'STOCK','POSITION')
+    except Exception as e:
+        print(f"获取持仓失败: {str(e)}")
+        # log.error(f"获取持仓失败: {str(e)}")
+        return
+
+    for holding in holdings:
+
+        security = holding.security
+        
+        # 获取持仓详情
+        # hold_amount = holding.m_nVolume     # 持仓数量
+        avg_cost = holding.m_dOpenPrice     # 平均成本
+        profit = holding.m_dFloatProfit     # 浮动盈亏
+        balance = holdings.m_nCanUseVolume  # 可用余额
+        current_price = holdings.dSettlementPrice # 当前股价
+        
+        # 固定比例止损（8%）
+        if balance > 0 and profit <= avg_cost * (1 - context.stop_loss):
+            close_position(context, security, balance, "固定比例止损")
+            continue
+            
+        # 固定比例止盈（20%）
+        if balance > 0 and current_price >= avg_cost * (1 + context.take_profit):
+            close_position(context, security, balance, "固定比例止盈")
+            continue
+            
+        # 回落止盈（需要自行维护最高价）
+        if context.trailing_mode:
+            if not hasattr(context, 'price_highs'):
+                context.price_highs = {}
+            context.price_highs[security] = max(
+                context.price_highs.get(security, current_price),
+                current_price
+            )
+            high_price = context.price_highs[security]
+            
+            if current_price <= high_price * (1 - context.trailing_stop):
+                close_position(context, security, balance, "回落止盈")
+                    
+
+def close_position(context, security, hold_am, reason):
+    """平仓操作（iquant版）"""
+    try:
+        order_target(security, -1, 'MARKET', context, context.account_id)
+        print(f"{reason}触发 {security} 价格:{price:.2f}")
+        # log.info(f"{reason}触发 {security} 价格:{price:.2f}")
+        # 清除最高价记录
+        if hasattr(context, 'price_highs') and security in context.price_highs:
+            del context.price_highs[security]
+    except Exception as e:
+        print(f"平仓失败 {security}: {str(e)}")
+        # log.error(f"平仓失败 {security}: {str(e)}")
