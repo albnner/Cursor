@@ -1,12 +1,18 @@
-def initialize(context):
+import numpy as np
+from datetime import datetime, timedelta
+import logging
+
+def init(context):
+    context.account_id = '620000095252'
     # 设置股票池（示例为沪深300成分股，可替换为其他股票池）
-    context.stock_pool = get_index_stocks('SH000300')
+    context.stock_pool = context.get_sector('000300.SH', realtime)
+    context.set_universe(context.stock_pool)
     # 设置筛选频率（按日筛选）
     context.screening_frequency = 1
 
-def handle_data(context, data):
+def handlebar(context):
     # 获取当前交易日
-    current_date = context.current_dt
+    current_date = timetag_to_datetime(context.get_bar_timetag(context.barpos),"%Y%m%d")
     
     # 预筛选结果列表
     selected_stocks = []
@@ -14,12 +20,12 @@ def handle_data(context, data):
     for stock in context.stock_pool:
         try:
             # 条件1: 实控人性质为国资（根据平台实际字段调整）
-            controller_type = get_factor(stock, 'actual_controller_type', current_date)
-            if controller_type != 'state-owned':
-                continue
+            # controller_type = get_factor(stock, 'actual_controller_type', current_date)
+            # if controller_type != 'state-owned':
+            #     continue
                 
             # 条件2: 流通市值筛选
-            circ_mv = get_factor(stock, 'circ_mv', current_date)  # 单位：亿元
+            circ_mv = get_financial_data(stock, 'circ_mv', current_date)  # 单位：亿元
             if circ_mv >= 150:
                 continue
                 
