@@ -7,13 +7,16 @@ def init(context):
     # 设置股票池（示例为沪深300成分股，可替换为其他股票池）
     context.stock_pool = context.get_sector('000300.SH', realtime)
     context.set_universe(context.stock_pool)
-    # 设置筛选频率（按日筛选）
-    context.screening_frequency = 1
+
+    context.max_days = 3 * 365         # 最大数据获取周期，3年
+    
+    context.screening_frequency = 1  # 设置筛选频率（按日筛选）
 
 def handlebar(context):
     # 获取当前交易日
     current_date = timetag_to_datetime(context.get_bar_timetag(context.barpos),"%Y%m%d")
-    
+    start_date = (datetime.strptime(current_date,"%Y%m%d")-timedelta(days = context.max_days)).strftime("%Y%m%d")
+
     # 预筛选结果列表
     selected_stocks = []
     
@@ -24,36 +27,53 @@ def handlebar(context):
             # if controller_type != 'state-owned':
             #     continue
                 
-            # 条件2: 流通市值筛选
-            circ_mv = get_financial_data(stock, 'circ_mv', current_date)  # 单位：亿元
-            if circ_mv >= 150:
+            # 条件2: 流通市值小于150亿
+            circ_cap = get_financial_data([CAPITALSTRUCTURE.circulating_capital]，stock, 'circ_mv', start_date, current_date)  # 单位：亿元
+            if circ_cap >= 150:
                 continue
                 
-            # 条件3: 估值条件（价格或PE满足其一）
-            # 3年价格低位（取最近250*3个交易日）
-            hist_close = get_price(stock, '1d', '20000101', current_date, 'close')[-750:]
-            current_price = data.current(stock, 'price')
-            pe = get_factor(stock, 'pe_ratio', current_date)
+            # === 条件3: 估值条件 ===
+            # 获取3年历史数据
+            hist_data = context.get_market_data(
+                stock_code=stock,
+                start_date=(datetime.strptime(current_date, "%Y%m%d") - timedelta(days=3*365)).strftime("%Y%m%d"),
+                end_date=current_date,
+                field='close',
+                dividend_type='back'
+            )
+            if len(hist_data) < 100:  # 至少100个交易日数据
+                continue
+                
+            # 价格条件：当前价格位于后20%分位
+            price_cond = price <= np.percentile(hist_data.close.values, 20)
             
-            price_condition = (current_price <= hist_close.min() * 1.1)  # 价格在最低10%范围内
-            pe_condition = (10 <= pe <= 18) if pe is not None else False
-            if not (price_condition or pe_condition):
+            # PE条件：TTM市盈率
+            pe_data = context.get_financials(
+                stock_code=stock,
+                report_type='valuation',
+                fields='pe_ratio_ttm',
+                period='latest'
+            )
+            pe_cond = 10 <= pe_data.iloc[0].value <= 18 if not pe_data.empty else False
+            
+            if not (price_cond or pe_cond):
                 continue
-                
-            # 条件4: 净利润稳定性（取最近3年年报数据）
-            # ... existing code ...
-            net_profit = get_financials(stock, 'net_profit', 'year', 3)  # 获取最近3年净利润
+
+            # === 条件4: 净利润稳定性 ===
+            net_profit = context.get_financials(
+                stock_code=stock,
+                report_type='income',
+                fields='net_profit',
+                period='year',
+                count=3
+            )
             if len(net_profit) < 3:
                 continue
                 
-            # 计算增长率和波动性
-            growth_rates = [(net_profit[i] - net_profit[i-1])/abs(net_profit[i-1]) 
-                          for i in range(1, len(net_profit))]
-            avg_growth = np.mean(growth_rates)
-            growth_std = np.std(growth_rates)
-            
-            # 要求：最近两年平均增长率>30%且波动率<50%
-            if avg_growth < 0.3 or growth_std > 0.5:
+            growth = [(net_profit.iloc[i].value - net_profit.iloc[i-1].value)/abs(net_profit.iloc[i-1].value) 
+                     for i in range(1,3)]
+            avg_growth = np.mean(growth)
+            if avg_growth < 0.3 or np.std(growth) > 0.5:
                 continue
                 
             selected_stocks.append(stock)
